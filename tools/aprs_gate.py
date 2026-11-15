@@ -238,11 +238,11 @@ def main(argv=None) -> int:
     if a.kiss_tcp:
         lst = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         lst.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        lst.bind(("127.0.0.1", a.kiss_tcp))
+        lst.bind(("0.0.0.0", a.kiss_tcp))
         lst.listen(4)
         lst.setblocking(False)
         sel.register(lst, selectors.EVENT_READ, "listen")
-        logging.info("KISS TCP on 127.0.0.1:%d", a.kiss_tcp)
+        logging.info("KISS TCP on 0.0.0.0:%d", a.kiss_tcp)
 
     gps = None
     gps_buf = b""
