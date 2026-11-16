@@ -124,6 +124,34 @@ def ax25_to_is(frame: bytes, my_base: str):
     info = frame[ctl + 2:].replace(b"\r", b"").replace(b"\n", b"")
     return f"{src}>{dst},TCPIP*:".encode("ascii", "replace") + info
 
+def tnc2_to_ax25(line: bytes):
+    """APRS-IS text line -> AX.25 UI frame for a KISS client, path replaced by TCPIP*; None if it can't be encoded."""
+    try:
+        head, info = line.split(b":", 1)
+        src, rest = head.split(b">", 1)
+        dst = rest.split(b",")[0]
+
+        def enc(call: bytes, last: bool, used: bool = False) -> bytes:
+            name, _, ssid = call.decode("ascii").upper().partition("-")
+            s = int(ssid) if ssid else 0
+            if not name or len(name) > 6 or s > 15:
+                raise ValueError
+            b = bytearray(ord(ch) << 1 for ch in name.ljust(6))
+            b.append(0x60 | (s << 1) | (1 if last else 0) | (0x80 if used else 0))
+            return bytes(b)
+
+        return enc(dst, False) + enc(src, False) + enc(b"TCPIP", True, True) + b"\x03\xf0" + info
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def is_message_for(line: bytes, my_base: str) -> bool:
+    """True for a message or ack addressed to our base callsign (any SSID)."""
+    info = line.split(b":", 1)[1] if b":" in line else b""
+    if info[:1] != b":" or len(info) < 11 or info[10:11] != b":":
+        return False
+    return info[1:10].decode("ascii", "replace").strip().upper().split("-")[0] == my_base
+
 class Radio:
     """The radio's host port: a USB serial port, or udp:<ip>[:3334] for a radio in USB network mode."""
 
@@ -323,6 +351,18 @@ def main(argv=None) -> int:
                         continue
                     logging.debug("IS -> radio: %s", line.decode("latin-1"))
                     radio.write(kiss_encode(CMD_SETHW, bytes([TAG_IS]) + line[:300]))
+                    if a.call and clients and is_message_for(line, a.call.upper().split("-")[0]):
+                        ax = tnc2_to_ax25(line)
+                        if ax:
+                            logging.info("IS -> client: %s", line.decode("latin-1"))
+                            frame = kiss_encode(CMD_DATA, ax)
+                            for c in list(clients):
+                                try:
+                                    c.sendall(frame)
+                                except OSError:
+                                    sel.unregister(c)
+                                    clients.pop(c, None)
+                                    c.close()
             elif what == "listen":
                 c, peer = key.fileobj.accept()
                 c.setblocking(False)
