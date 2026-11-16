@@ -144,7 +144,6 @@ def tnc2_to_ax25(line: bytes):
     except (ValueError, UnicodeDecodeError):
         return None
 
-
 def is_message_for(line: bytes, my_base: str) -> bool:
     """True for a message or ack addressed to our base callsign (any SSID)."""
     info = line.split(b":", 1)[1] if b":" in line else b""
@@ -351,7 +350,7 @@ def main(argv=None) -> int:
                         continue
                     logging.debug("IS -> radio: %s", line.decode("latin-1"))
                     radio.write(kiss_encode(CMD_SETHW, bytes([TAG_IS]) + line[:300]))
-                    if a.call and clients and is_message_for(line, a.call.upper().split("-")[0]):
+                    if clients and is_message_for(line, a.call.upper().split("-")[0]):
                         ax = tnc2_to_ax25(line)
                         if ax:
                             logging.info("IS -> client: %s", line.decode("latin-1"))
