@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // The radio core's state machine (core/radio/radio_sm.c) against a fake board and a fake codeplug
+#include "input/input.h"
 #include "input/keyassign.h"
 #include <stdio.h>
 #include <string.h>
 #include "board.h"
 #include "radio/radio_sm.h"
+#include "codeplug/codeplug_modes.h"
 #if CONFIG_APRS
 #include "aprs/aprs_beacon.h"	// APRS_WHY_*
 #endif
@@ -628,6 +630,47 @@ static void test_channel_step(void)
 	CHECK(sm.view.channel_number == 6);
 	req(RREQ_ZONE, 7);			// no such zone
 	CHECK(sm.view.zone_index == 1);
+}
+
+// A channel of a kind this build doesn't run (docs/spec/channel-modes.md 6): tuned in FM with the modem off, the squelch
+// never opens, PTT refused for the mode (before receive only), never a VFO copy, the next channel works as before
+static void test_parked_kind(void)
+{
+	setup_codeplug();
+	chans[6].mode = RADIO_MODE_DMR;
+	chans[6].kind = CODEPLUG_KIND_DMR_TRUNK;	// not built on main
+	chans[6].rx_only = false;			// its tag allows TX: the build still refuses
+	start();
+	req(RREQ_ZONE, 1);
+	CHECK(sm.view.channel_number == 6 && sm.view.ch.kind == CODEPLUG_KIND_DMR_TRUNK);
+	CHECK(sm.board_mode == RADIO_MODE_FM && hw_mode == RADIO_MODE_FM && !sim.started && hw.rx_hz == 145500000);
+	rx_signal(10, true);
+	poll_for(200);
+	CHECK(sm.view.state == RS_IDLE && !hw.audio);
+	req(RREQ_PTT, 1);
+	CHECK(sm.view.state == RS_TX_DENIED && sm.view.tx_deny == TXDENY_MODE && hw.tx_calls == 0);
+	req(RREQ_PTT, 0);
+	CHECK(radio_vfo_copy_check(&sm.view.ch, false) != VFO_COPY_OK);
+	// P25 conventional and trunked (the radio core runs neither: parked with CONFIG_P25 on or off), unknown ids the same
+	static const uint8_t kinds[] = { CODEPLUG_KIND_P25, CODEPLUG_KIND_P25_TRUNK };
+	for (unsigned i = 0; i < sizeof kinds; i++) {
+		chans[6].kind = kinds[i];
+		req(RREQ_ZONE, 0);
+		req(RREQ_ZONE, 1);
+		CHECK(sm.view.ch.kind == kinds[i] && sm.board_mode == RADIO_MODE_FM && !sim.started);
+		req(RREQ_PTT, 1);
+		CHECK(sm.view.tx_deny == TXDENY_MODE && hw.tx_calls == 0);
+		req(RREQ_PTT, 0);
+	}
+	chans[6].kind = 0x99;
+	req(RREQ_ZONE, 0);
+	req(RREQ_ZONE, 1);
+	CHECK(sm.view.ch.kind == 0x99 && sm.board_mode == RADIO_MODE_FM);
+	req(RREQ_PTT, 1);
+	CHECK(sm.view.tx_deny == TXDENY_MODE && hw.tx_calls == 0);
+	req(RREQ_PTT, 0);
+	rx_signal(120, true);
+	setup_codeplug();
 }
 
 static void test_squelch(void)
@@ -3127,6 +3170,7 @@ static void test_ui_requests(void)
 // requests go straight into the state machine here instead of through radio_task.c's queue ----
 
 uint32_t hal_millis(void) { return now; }
+void hal_delay_ms(uint32_t ms) { now += ms; }	// the PA sweep op's wait
 void radio_get_view(radio_view_t *v) { *v = sm.view; }
 uint32_t radio_view_serial(void) { return sm.serial; }
 void radio_get_settings(radio_settings_t *s) { *s = sm.set; }
@@ -3146,6 +3190,8 @@ void radio_req_scan_vfo(uint32_t lo, uint32_t hi) { (void)lo; (void)hi; }
 void radio_req_tone_burst(bool on, uint32_t max_ms) { (void)on; (void)max_ms; }
 void radio_req_dtmf(char digit, bool down) { req(RREQ_DTMF, (uint8_t)digit | (down ? 0x100 : 0)); }
 bool radio_dtmf_ready(void) { return sm.view.dtmf_ready; }
+radio_state_t radio_get_state(void) { return (radio_state_t)sm.view.state; }
+input_inject_t input_inject_ptt(bool down, uint32_t max_ms) { (void)down; (void)max_ms; return INPUT_INJ_OK; }
 void radio_req_scan(uint8_t cmd) { req(RREQ_SCAN, cmd); }
 void radio_req_vfo_step_size(uint32_t hz) { req(RREQ_VFO_STEP_SIZE, (int32_t)hz); }
 void radio_req_dual(const radio_dual_ref_t ref[2], uint8_t sel)
@@ -5626,6 +5672,7 @@ int main(void)
 	test_channel_step();
 	test_vfo_step_auto();
 	test_squelch();
+	test_parked_kind();
 	test_tx();
 	test_deny_flash_then_tx();
 	test_timeout();
