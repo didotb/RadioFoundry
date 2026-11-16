@@ -321,6 +321,7 @@ def main(argv=None) -> int:
                         if line:
                             logging.debug("IS: %s", line.decode("latin-1"))
                         continue
+                    logging.debug("IS -> radio: %s", line.decode("latin-1"))
                     radio.write(kiss_encode(CMD_SETHW, bytes([TAG_IS]) + line[:300]))
             elif what == "listen":
                 c, peer = key.fileobj.accept()
