@@ -32,7 +32,6 @@ import selectors
 import socket
 import sys
 import time
-import re
 
 FEND, FESC, TFEND, TFESC = 0xC0, 0xDB, 0xDC, 0xDD
 CMD_DATA, CMD_SETHW = 0x00, 0x06
@@ -145,12 +144,6 @@ def tnc2_to_ax25(line: bytes):
     except (ValueError, UnicodeDecodeError):
         return None
 
-PH_DISTRICT9_CALL = re.compile(r"(?:4[DEFGHI]|D[UVWXYZ])9[A-Z]{1,3}\Z")
-
-def base_callsign(call: str) -> str:
-    """Return the base callsign without its SSID."""
-    return call.strip().upper().partition("-")[0]
-
 def message_addressee(line: bytes):
     """Return the fixed-width APRS message/ack addressee, or None."""
     try:
@@ -163,19 +156,6 @@ def message_addressee(line: bytes):
         return info[1:10].decode("ascii").strip().upper()
     except UnicodeDecodeError:
         return None
-
-def is_ph_district9_call(call: str) -> bool:
-    """True for a Philippine District 9 base callsign, regardless of its valid SSID."""
-    call = call.strip().upper()
-    base, sep, ssid = call.partition("-")
-    # Validate an explicitly supplied SSID, but never use it to identify the station.
-    if sep and (not ssid.isdigit() or not 1 <= int(ssid) <= 15):
-        return False
-    return PH_DISTRICT9_CALL.fullmatch(base) is not None
-
-def is_message_for(line: bytes, my_call: str) -> bool:
-    recipient = message_addressee(line)
-    return bool(recipient and my_call and base_callsign(recipient) == base_callsign(my_call))
 
 class Radio:
     """The radio's host port: a USB serial port, or udp:<ip>[:3334] for a radio in USB network mode."""
@@ -376,7 +356,7 @@ def main(argv=None) -> int:
                         continue
                     logging.debug("IS -> radio: %s", line.decode("latin-1"))
                     radio.write(kiss_encode(CMD_SETHW, bytes([TAG_IS]) + line[:300]))
-                    if a.call and clients and is_message_for(line, a.call):
+                    if clients and message_addressee(line) is not None:
                         ax = tnc2_to_ax25(line)
                         if ax:
                             logging.info("IS -> client: %s", line.decode("latin-1"))
