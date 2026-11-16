@@ -104,6 +104,25 @@ def nmea_ok(line: str) -> bool:
     except ValueError:
         return False
 
+def ax25_to_is(frame: bytes, my_base: str):
+    """AX.25 UI frame from a KISS client -> APRS-IS line (TCPIP*), or None. Own callsign only."""
+    n = 1
+    while n * 7 + 6 < len(frame) and not frame[n * 7 + 6] & 1:
+        n += 1
+    ctl = (n + 1) * 7
+    if n * 7 + 6 >= len(frame) or frame[ctl:ctl + 2] != b"\x03\xf0":
+        return None
+
+    def addr(b):
+        call = bytes(c >> 1 for c in b[:6]).decode("ascii", "replace").strip()
+        ssid = (b[6] >> 1) & 0x0F
+        return call + (f"-{ssid}" if ssid else "")
+
+    src, dst = addr(frame[7:14]), addr(frame[0:7])
+    if src.split("-")[0] != my_base:
+        return None
+    info = frame[ctl + 2:].replace(b"\r", b"").replace(b"\n", b"")
+    return f"{src}>{dst},TCPIP*:".encode("ascii", "replace") + info
 
 class Radio:
     """The radio's host port: a USB serial port, or udp:<ip>[:3334] for a radio in USB network mode."""
@@ -323,6 +342,11 @@ def main(argv=None) -> int:
                 for typ, payload in clients[c].feed(data):
                     if typ & 0x0F == CMD_DATA and typ >> 4 == 0:
                         radio.write(kiss_encode(CMD_DATA, payload))
+                        if ais is not None and a.call:
+                            line = ax25_to_is(payload, a.call.upper().split("-")[0])
+                            if line:
+                                logging.info("client -> IS: %s", line.decode("latin-1"))
+                                ais.send(line)
             elif what == "gps":
                 gps_buf += gps.read(1024)
                 *done, gps_buf = gps_buf.split(b"\n")
