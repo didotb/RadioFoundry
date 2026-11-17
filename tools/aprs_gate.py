@@ -197,7 +197,8 @@ class Radio:
 
     def keepalive(self):
         # An empty KISS frame keeps the radio's host link in its TNC mode (it ends after 30 s without frames)
-        self.write(bytes([FEND, FEND]))
+        # This now uses a valid KISS TXDELAY command with a value of 0
+        self.write(kiss_encode(0x01, b"\x00"))
 
 
 class AprsIs:
