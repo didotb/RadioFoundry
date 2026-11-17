@@ -106,6 +106,7 @@ def nmea_ok(line: str) -> bool:
 
 def ax25_to_is(frame: bytes, my_base: str):
     """AX.25 UI frame from a KISS client -> APRS-IS line (TCPIP*), or None. Own callsign only."""
+    my_base = my_base.upper().split("-")[0]
     n = 1
     while n * 7 + 6 < len(frame) and not frame[n * 7 + 6] & 1:
         n += 1
