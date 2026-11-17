@@ -158,6 +158,64 @@ def message_addressee(line: bytes):
     except UnicodeDecodeError:
         return None
 
+def ax25_source(frame: bytes):
+    """(source call-SSID, heard directly?) for an AX.25 UI frame heard on RF, or None."""
+    n = 1
+    while n * 7 + 6 < len(frame) and not frame[n * 7 + 6] & 1:
+        n += 1
+    ctl = (n + 1) * 7
+    if n * 7 + 6 >= len(frame) or frame[ctl:ctl + 2] != b"\x03\xf0":
+        return None
+    s = frame[7:14]
+    call = bytes(c >> 1 for c in s[:6]).decode("ascii", "replace").strip()
+    ssid = (s[6] >> 1) & 0x0F
+    src = (call + (f"-{ssid}" if ssid else "")).upper()
+    direct = not any(frame[i * 7 + 6] & 0x80 for i in range(2, n + 1))   # no digipeater has repeated it
+    return src, direct
+
+
+class Gating:
+    """Mirrors the firmware's IS -> RF rules (docs/spec/aprs.md) so the log shows only what should go on air."""
+    DIRECT_S, SENDER_S, DUP_S = 1800, 600, 30
+
+    def __init__(self):
+        self.direct = {}    # call -> last time heard directly on RF
+        self.any = {}       # call -> last time heard on RF at all
+        self.seen = {}      # (source, info) -> last time this IS packet arrived
+
+    def heard(self, frame: bytes):
+        r = ax25_source(frame)
+        if r is None:
+            return
+        src, direct = r
+        now = time.time()
+        self.any[src] = now
+        if direct:
+            self.direct[src] = now
+
+    def check(self, line: bytes):
+        """(True, "") if the radio should transmit this IS line, else (False, reason)."""
+        now = time.time()
+        for d in (self.direct, self.any, self.seen):
+            if len(d) > 2000:
+                for k in [k for k, t in d.items() if now - t > 1800]:
+                    del d[k]
+        to = message_addressee(line)
+        if to is None:
+            return False, "not a message"
+        head, info = line.split(b":", 1)
+        src = head.split(b">")[0].decode("latin-1").upper()
+        key = (src, info)
+        dup = now - self.seen.get(key, 0) < self.DUP_S
+        self.seen[key] = now
+        if dup:
+            return False, "duplicate within 30 s"
+        if now - self.direct.get(to, 0) > self.DIRECT_S:
+            return False, f"{to} not heard directly in the last 30 min"
+        if now - self.any.get(src, 0) < self.SENDER_S:
+            return False, f"sender {src} heard on RF in the last 10 min"
+        return True, ""
+
 class Radio:
     """The radio's host port: a USB serial port, or udp:<ip>[:3334] for a radio in USB network mode."""
 
@@ -307,6 +365,7 @@ def main(argv=None) -> int:
     replay = open(a.nmea_file, "r", errors="replace") if a.nmea_file else None
     next_replay = 0.0
     next_keepalive = 0.0
+    gating = Gating()
 
     def to_radio_nmea(line: str):
         if nmea_ok(line) and line[3:6] in ("RMC", "GGA"):
@@ -336,6 +395,7 @@ def main(argv=None) -> int:
                             ais.send(payload[1:])
                     elif typ & 0x0F == CMD_DATA:
                         logging.debug("radio heard %d bytes", len(payload))
+                        gating.heard(payload)
                         frame = kiss_encode(CMD_DATA, payload)
                         for c in list(clients):
                             try:
@@ -356,8 +416,12 @@ def main(argv=None) -> int:
                         if line:
                             logging.debug("IS: %s", line.decode("latin-1"))
                         continue
-                    logging.debug("IS -> radio: %s", line.decode("latin-1"))
                     radio.write(kiss_encode(CMD_SETHW, bytes([TAG_IS]) + line[:300]))
+                    ok, why = gating.check(line)
+                    if ok:
+                        logging.info("IS -> radio (should transmit): %s", line.decode("latin-1"))
+                    else:
+                        logging.debug("IS -> radio (ignored, %s): %s", why, line.decode("latin-1"))
                     if clients and message_addressee(line) is not None:
                         ax = tnc2_to_ax25(line)
                         if ax:
