@@ -37,6 +37,7 @@ FEND, FESC, TFEND, TFESC = 0xC0, 0xDB, 0xDC, 0xDD
 CMD_DATA, CMD_SETHW = 0x00, 0x06
 TAG_IS, TAG_NMEA = ord("G"), ord("N")
 VERSION = "RadioFoundry-aprs_gate 1.0"
+GROUP_CALL = {"DX9","DZ9"}
 
 
 def kiss_encode(cmd: int, payload: bytes) -> bytes:
@@ -420,8 +421,6 @@ def main(argv=None) -> int:
                     ok, why = gating.check(line)
                     if ok:
                         logging.info("IS -> radio (should transmit): %s", line.decode("latin-1"))
-                    else:
-                        logging.debug("IS -> radio (ignored, %s): %s", why, line.decode("latin-1"))
                     if clients and message_addressee(line) is not None:
                         ax = tnc2_to_ax25(line)
                         if ax:
